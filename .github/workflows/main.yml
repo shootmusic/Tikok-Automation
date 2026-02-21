@@ -1,0 +1,86 @@
+name: TikTok Auto Upload
+
+on:
+  schedule:
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+
+jobs:
+  tiktok-upload:
+    runs-on: ubuntu-latest
+    name: Upload to @reemaas62
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+        pip install gdown
+    
+    - name: Download video from Google Drive
+      run: |
+        echo "Downloading video from Google Drive..."
+        gdown "https://drive.google.com/uc?id=1NCYonDGrVwHsSXvN_6gr6GEWWge3HaHy" -O source_video.mp4
+    
+    - name: Extract video frame
+      run: |
+        ffmpeg -i source_video.mp4 -ss 10 -vframes 1 -y video_frame.jpg
+    
+    - name: Analyze video with Gemini
+      env:
+        GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
+      run: |
+        BASE64=$(base64 -w 0 video_frame.jpg)
+        
+        curl -s -X POST "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "contents": [{
+              "parts": [
+                {"text": "Deskripsikan video ini singkat"},
+                {"inline_data": {"mime_type": "image/jpeg", "data": "'"${BASE64}"'"}}
+              ]
+            }]
+          }' > analysis.json
+        
+        jq -r '.candidates[0].content.parts[0].text' analysis.json > video_desc.txt
+    
+    - name: Cut video to 60 seconds
+      run: |
+        DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 source_video.mp4)
+        MAX_START=$(echo "$DURATION - 60" | bc)
+        START_TIME=$(awk -v min=0 -v max=$MAX_START 'BEGIN{srand(); print min+rand()*(max-min)}')
+        
+        ffmpeg -i source_video.mp4 -ss $START_TIME -t 60 -c:v libx264 -c:a aac -preset fast -y output.mp4
+    
+    - name: Generate TikTok caption
+      env:
+        GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
+      run: |
+        DESCRIPTION=$(cat video_desc.txt)
+        
+        curl -s -X POST "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "contents": [{
+              "parts": [{
+                "text": "Buat 1 caption TikTok berdasarkan ini: '"${DESCRIPTION}"'. Sertakan emoji dan 5 hashtag."
+              }]
+            }]
+          }' > caption.json
+        
+        jq -r '.candidates[0].content.parts[0].text' caption.json > final_caption.txt
+    
+    - name: Send to Telegram
+      env:
+        TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: |
+        CAPTION=$(cat final_caption.txt)
+        curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendVideo" \
+          -F chat_id="${CHAT_ID}" \
+          -F video=@output.mp4 \
+          -F caption="${CAPTION}"
