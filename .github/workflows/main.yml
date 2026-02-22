@@ -118,5 +118,5 @@ client.send_local_video(
     thread_type=ThreadType.PAGE
 )
 client.logout()
-print("✅ Upload ke Facebook berhasil!")
+print("Upload ke Facebook berhasil!")
 EOF
