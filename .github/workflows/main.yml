@@ -19,11 +19,10 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg jq
-        pip install gdown
+        pip install gdown fbchat
     
     - name: Download video from Google Drive
       run: |
-        echo "Downloading video..."
         gdown "https://drive.google.com/uc?id=1NCYonDGrVwHsSXvN_6gr6GEWWge3HaHy" -O source_video.mp4
     
     - name: Extract video frame
@@ -42,7 +41,7 @@ jobs:
           -d '{
             "contents": [{
               "parts": [
-                {"text": "Deskripsikan video ini dalam 1 kalimat singkat (max 20 kata)"},
+                {"text": "Deskripsikan video ini dalam 1 kalimat singkat"},
                 {"inline_data": {"mime_type": "image/jpeg", "data": "'"${BASE64}"'"}}
               ]
             }]
@@ -73,21 +72,15 @@ jobs:
           -d '{
             "contents": [{
               "parts": [{
-                "text": "Buat 1 caption TikTok dalam bahasa Indonesia berdasarkan video ini: '"${DESCRIPTION}"'. Sertakan emoji dan 5 hashtag. Langsung captionnya aja tanpa kata lain."
+                "text": "Buat 1 caption TikTok dalam bahasa Indonesia berdasarkan ini: '"${DESCRIPTION}"'. Sertakan emoji dan 5 hashtag."
               }]
-            }],
-            "generationConfig": {
-              "temperature": 0.9,
-              "maxOutputTokens": 100
-            }
+            }]
           }' > caption.json
         
-        # Ambil caption, fallback kalo error
         CAPTION=$(jq -r '.candidates[0].content.parts[0].text' caption.json)
         if [[ "$CAPTION" == "null" || -z "$CAPTION" ]]; then
           CAPTION="Daily vibes ✨ #fyp #viral #tiktok #indonesia #daily"
         fi
-        
         echo "$CAPTION" > final_caption.txt
         echo "CAPTION<<EOF" >> $GITHUB_OUTPUT
         cat final_caption.txt >> $GITHUB_OUTPUT
@@ -99,14 +92,36 @@ jobs:
         CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         CAPTION: ${{ steps.caption.outputs.CAPTION }}
       run: |
-        echo "Caption: ${CAPTION}"
-        
         curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendVideo" \
           -F chat_id="${CHAT_ID}" \
           -F video=@output.mp4 \
           -F caption="${CAPTION}"
         
-        # Kirim juga file caption cadangan
         curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendDocument" \
           -F chat_id="${CHAT_ID}" \
           -F document=@final_caption.txt
+    
+    - name: Upload to Facebook (fbchat)
+      env:
+        FB_EMAIL: newnormalok522@gmail.com
+        FB_PASSWORD: ${{ secrets.FB_PASSWORD }}
+        CAPTION: ${{ steps.caption.outputs.CAPTION }}
+      run: |
+        python3 << EOF
+import fbchat
+from fbchat.models import *
+
+# Login ke Facebook
+client = fbchat.Client("newnormalok522@gmail.com", "$FB_PASSWORD")
+
+# Upload video ke page "Asupan Random +62" (ID: 100071696370546)
+client.send_local_video(
+    video_path="output.mp4",
+    message="$CAPTION",
+    thread_id="100071696370546",
+    thread_type=ThreadType.PAGE
+)
+
+client.logout()
+print("✅ Upload ke Facebook berhasil!")
+EOF
