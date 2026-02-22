@@ -2,8 +2,8 @@ name: TikTok Auto Upload
 
 on:
   schedule:
-    - cron: '0 12 * * *'   # 19:00 WIB
-    - cron: '0 23 * * *'   # 06:00 WIB
+    - cron: '0 12 * * *'
+    - cron: '0 23 * * *'
   workflow_dispatch:
 
 jobs:
@@ -23,7 +23,7 @@ jobs:
 
     - name: Download video from Google Drive
       run: |
-        echo "📥 Downloading video..."
+        echo "Downloading video..."
         gdown "https://drive.google.com/uc?id=1NCYonDGrVwHsSXvN_6gr6GEWWge3HaHy" -O source_video.mp4
 
     - name: Extract video frame
@@ -36,7 +36,6 @@ jobs:
         GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
       run: |
         BASE64=$(base64 -w 0 video_frame.jpg)
-
         curl -s -X POST "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}" \
           -H "Content-Type: application/json" \
           -d '{
@@ -47,7 +46,6 @@ jobs:
               ]
             }]
           }' > analysis.json
-
         jq -r '.candidates[0].content.parts[0].text' analysis.json > video_desc.txt
         echo "DESC=$(cat video_desc.txt)" >> $GITHUB_OUTPUT
 
@@ -57,7 +55,6 @@ jobs:
         DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 source_video.mp4)
         MAX_START=$(echo "$DURATION - 60" | bc)
         START_TIME=$(awk -v min=0 -v max=$MAX_START 'BEGIN{srand(); print min+rand()*(max-min)}')
-
         ffmpeg -i source_video.mp4 -ss $START_TIME -t 60 -c:v libx264 -c:a aac -preset fast -y output.mp4
         echo "START_TIME=$START_TIME" >> $GITHUB_OUTPUT
 
@@ -67,7 +64,6 @@ jobs:
         GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
       run: |
         DESCRIPTION="${{ steps.analysis.outputs.DESC }}"
-
         curl -s -X POST "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}" \
           -H "Content-Type: application/json" \
           -d '{
@@ -81,12 +77,10 @@ jobs:
               "maxOutputTokens": 100
             }
           }' > caption.json
-
         CAPTION=$(jq -r '.candidates[0].content.parts[0].text' caption.json)
         if [[ "$CAPTION" == "null" || -z "$CAPTION" ]]; then
-          CAPTION="Daily vibes ✨ #fyp #viral #tiktok #indonesia #daily"
+          CAPTION="Daily vibes #fyp #viral #tiktok #indonesia #daily"
         fi
-
         echo "$CAPTION" > final_caption.txt
         echo "CAPTION<<EOF" >> $GITHUB_OUTPUT
         cat final_caption.txt >> $GITHUB_OUTPUT
@@ -102,7 +96,6 @@ jobs:
           -F chat_id="${CHAT_ID}" \
           -F video="@output.mp4" \
           -F caption="${CAPTION}"
-
         curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendDocument" \
           -F chat_id="${CHAT_ID}" \
           -F document="@final_caption.txt"
@@ -118,14 +111,12 @@ import fbchat
 from fbchat.models import *
 
 client = fbchat.Client("newnormalok522@gmail.com", "$FB_PASSWORD")
-
 client.send_local_video(
     video_path="output.mp4",
     message="$CAPTION",
     thread_id="100071696370546",
     thread_type=ThreadType.PAGE
 )
-
 client.logout()
 print("✅ Upload ke Facebook berhasil!")
 EOF
