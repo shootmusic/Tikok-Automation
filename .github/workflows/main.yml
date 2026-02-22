@@ -1,0 +1,175 @@
+name: Facebook Auto Upload
+
+on:
+  schedule:
+    - cron: '0 12 * * *'   # 19:00 WIB
+    - cron: '0 23 * * *'   # 06:00 WIB
+  workflow_dispatch:
+
+jobs:
+  facebook-upload:
+    runs-on: ubuntu-latest
+    name: Upload to Asupan Random +62
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg jq
+        pip install gdown requests
+
+    - name: Download video from Google Drive
+      run: |
+        echo "Downloading video..."
+        gdown "https://drive.google.com/uc?id=1NCYonDGrVwHsSXvN_6gr6GEWWge3HaHy" -O source_video.mp4
+
+    - name: Extract video frame
+      run: |
+        ffmpeg -i source_video.mp4 -ss 10 -vframes 1 -y video_frame.jpg
+
+    - name: Analyze video with Gemini
+      id: analysis
+      env:
+        GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
+      run: |
+        BASE64=$(base64 -w 0 video_frame.jpg)
+
+        curl -s -X POST "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "contents": [{
+              "parts": [
+                {"text": "Deskripsikan video ini dalam 1 kalimat singkat (max 20 kata)"},
+                {"inline_data": {"mime_type": "image/jpeg", "data": "'"${BASE64}"'"}}
+              ]
+            }]
+          }' > analysis.json
+
+        jq -r '.candidates[0].content.parts[0].text' analysis.json > video_desc.txt
+        echo "DESC=$(cat video_desc.txt)" >> $GITHUB_OUTPUT
+
+    - name: Cut video to 60 seconds
+      id: cut
+      run: |
+        DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 source_video.mp4)
+        MAX_START=$(echo "$DURATION - 60" | bc)
+        START_TIME=$(awk -v min=0 -v max=$MAX_START 'BEGIN{srand(); print min+rand()*(max-min)}')
+
+        ffmpeg -i source_video.mp4 -ss $START_TIME -t 60 -c:v libx264 -c:a aac -preset fast -y output.mp4
+        echo "START_TIME=$START_TIME" >> $GITHUB_OUTPUT
+
+    - name: Generate Facebook caption and title
+      id: caption
+      env:
+        GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
+      run: |
+        DESCRIPTION="${{ steps.analysis.outputs.DESC }}"
+
+        curl -s -X POST "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "contents": [{
+              "parts": [{
+                "text": "Berdasarkan deskripsi video ini: '"${DESCRIPTION}"', buat 1 judul yang menarik dan 1 caption Facebook dalam bahasa Indonesia. Judul harus singkat dan catchy. Caption sertakan emoji dan 5 hashtag umum (hindari #tiktok #fyp). Format: JUDUL: ... | CAPTION: ..."
+              }]
+            }],
+            "generationConfig": {
+              "temperature": 0.9,
+              "maxOutputTokens": 150
+            }
+          }' > caption.json
+
+        FULL_TEXT=$(jq -r '.candidates[0].content.parts[0].text' caption.json)
+        
+        TITLE=$(echo "$FULL_TEXT" | grep -oP 'JUDUL: \K[^|]+' | head -1)
+        CAPTION=$(echo "$FULL_TEXT" | grep -oP 'CAPTION: \K.*$' | head -1)
+
+        if [[ -z "$TITLE" ]]; then
+          TITLE="Daily Video"
+        fi
+
+        if [[ -z "$CAPTION" || "$CAPTION" == "null" ]]; then
+          CAPTION="Momen seru hari ini 💐 #daily #viral #indonesia #facebook #reels"
+        fi
+
+        echo "$TITLE" > title.txt
+        echo "$CAPTION" > final_caption.txt
+        echo "TITLE<<EOF" >> $GITHUB_OUTPUT
+        cat title.txt >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+        echo "CAPTION<<EOF" >> $GITHUB_OUTPUT
+        cat final_caption.txt >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+    - name: Kirim video ke Telegram
+      env:
+        TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        CAPTION: ${{ steps.caption.outputs.CAPTION }}
+        TITLE: ${{ steps.caption.outputs.TITLE }}
+      run: |
+        echo "Mengirim video ke Telegram..."
+        curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendVideo" \
+          -F chat_id="${CHAT_ID}" \
+          -F video="@output.mp4" \
+          -F caption="${TITLE}\n\n${CAPTION}" > /dev/null
+        
+        curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendDocument" \
+          -F chat_id="${CHAT_ID}" \
+          -F document="@final_caption.txt" > /dev/null
+
+    - name: Upload to Facebook
+      env:
+        FB_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
+        FB_PAGE_ID: "104884774466325"
+        CAPTION: ${{ steps.caption.outputs.CAPTION }}
+        TITLE: ${{ steps.caption.outputs.TITLE }}
+      run: |
+        python3 << 'EOF'
+        import requests
+        import os
+
+        token = os.environ.get("FB_TOKEN", "")
+        page_id = os.environ.get("FB_PAGE_ID", "")
+        caption = os.environ.get("CAPTION", "")
+        title = os.environ.get("TITLE", "")
+
+        full_caption = f"{title}\n\n{caption}"
+
+        url = f"https://graph.facebook.com/v18.0/{page_id}/videos"
+
+        with open("output.mp4", "rb") as f:
+            response = requests.post(
+                url,
+                data={
+                    "description": full_caption,
+                    "access_token": token
+                },
+                files={"source": f},
+                timeout=120
+            )
+
+        result = response.json()
+
+        if "id" in result:
+            telegram_token = "${{ secrets.TELEGRAM_TOKEN }}"
+            chat_id = "${{ secrets.TELEGRAM_CHAT_ID }}"
+            success_msg = f"💐 Upload Facebook berhasil\nJudul: {title}"
+            requests.post(
+                f"https://api.telegram.org/bot{telegram_token}/sendMessage",
+                data={"chat_id": chat_id, "text": success_msg}
+            )
+        EOF
+
+    - name: Kirim notifikasi selesai
+      if: always()
+      env:
+        TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: |
+        curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+          -d chat_id="${CHAT_ID}" \
+          -d text="💐 Proses selesai" > /dev/null
