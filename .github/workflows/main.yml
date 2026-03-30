@@ -2,8 +2,8 @@ name: Facebook Auto Upload
 
 on:
   schedule:
-    - cron: '0 12 * * *'
-    - cron: '0 23 * * *'
+    - cron: '0 12 * * *'   # 19:00 WIB
+    - cron: '0 23 * * *'   # 06:00 WIB
   workflow_dispatch:
 
 jobs:
@@ -30,15 +30,16 @@ jobs:
 
     - name: Download video from Google Drive
       run: |
-        echo "🍂 Downloading Vikings S1E1..."
-        gdown "https://drive.google.com/uc?id=1GXi0sXcYcSe6GjGr76Y2cf9eqQyZ_MbD" -O source_video.mp4 --fuzzy
+        echo "📥 Downloading Vikings S1E1..."
+        gdown "https://drive.google.com/uc?id=1GXi0sXcYcSe6GjGr76Y2cf9eqQyZ_MbD" -O source_video.mp4 --fuzzy --quiet
+        echo "✅ Download completed"
 
     - name: Get video duration
       id: duration
       run: |
         DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 source_video.mp4 | cut -d. -f1)
         echo "duration=$DURATION" >> $GITHUB_OUTPUT
-        echo "🍂 Video duration: $DURATION seconds"
+        echo "🎬 Video duration: $DURATION seconds"
 
     - name: Find unused cut position
       id: cut
@@ -46,10 +47,14 @@ jobs:
         DURATION=${{ steps.duration.outputs.duration }}
         MAX_START=$((DURATION - 60))
         
+        # Create used_cuts.txt if not exists
         touch used_cuts.txt
-        USED_COUNT=$(wc -l < used_cuts.txt)
-        echo "🍂 Used cuts: $USED_COUNT"
         
+        # Count used cuts
+        USED_COUNT=$(wc -l < used_cuts.txt)
+        echo "📊 Used cuts so far: $USED_COUNT"
+        
+        # Find unused random position
         while true; do
           START_TIME=$((RANDOM % MAX_START))
           if ! grep -q "^$START_TIME$" used_cuts.txt; then
@@ -59,53 +64,80 @@ jobs:
         done
         
         START_FORMATTED=$(printf "%02d:%02d:%02d" $((START_TIME/3600)) $(((START_TIME%3600)/60)) $((START_TIME%60)))
-        echo "🍂 Cutting at $START_FORMATTED (unique position)"
+        echo "✂️ Cutting at $START_FORMATTED (unique position)"
         
-        ffmpeg -i source_video.mp4 -ss "$START_FORMATTED" -t 60 -c:v libx264 -c:a aac -preset fast -y output.mp4
+        # Cut video
+        ffmpeg -i source_video.mp4 -ss "$START_FORMATTED" -t 60 \
+          -c:v libx264 -c:a aac -preset fast -y output.mp4 2>/dev/null
+        
         echo "start_time=$START_TIME" >> $GITHUB_OUTPUT
+        echo "✅ Cut completed"
 
     - name: Extract frames for analysis
       run: |
-        ffmpeg -i output.mp4 -ss 5 -vframes 1 -y frame1.jpg
-        ffmpeg -i output.mp4 -ss 20 -vframes 1 -y frame2.jpg
-        ffmpeg -i output.mp4 -ss 40 -vframes 1 -y frame3.jpg
+        ffmpeg -i output.mp4 -ss 5 -vframes 1 -y frame1.jpg 2>/dev/null
+        ffmpeg -i output.mp4 -ss 20 -vframes 1 -y frame2.jpg 2>/dev/null
+        ffmpeg -i output.mp4 -ss 40 -vframes 1 -y frame3.jpg 2>/dev/null
+        echo "🖼️ Frames extracted"
 
     - name: Generate creative caption with Gemini
       id: caption
       env:
         GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
       run: |
+        # Encode frames to base64
         FRAME1_B64=$(base64 -w 0 frame1.jpg)
         FRAME2_B64=$(base64 -w 0 frame2.jpg)
         FRAME3_B64=$(base64 -w 0 frame3.jpg)
         
+        # Create JSON payload
         cat > payload.json << EOF
         {
           "contents": [{
             "parts": [
-              {"text": "Analisis video pendek 60 detik dari VIKINGS Season 1 Episode 1. Berdasarkan 3 frame:\n\n1. BUAT JUDUL EPIC dalam bahasa Indonesia (max 60 karakter)\n2. BUAT CAPTION FACEBOOK engaging + 5-8 hashtag\n\nFormat:\nJUDUL: ...\nCAPTION: ..."},
+              {"text": "Analisis video pendek 60 detik dari serial VIKINGS Season 1 Episode 1. Berdasarkan 3 frame yang diberikan, buat:\n\n1. JUDUL: judul epic dalam bahasa Indonesia (max 60 karakter, catchy)\n2. CAPTION: caption Facebook yang engaging, ajak interaksi, sertakan emoji dan 5-8 hashtag relevan\n\nFormat JAWABAN:\nJUDUL: [judul disini]\nCAPTION: [caption disini dengan hashtag]"},
               {"inline_data": {"mime_type": "image/jpeg", "data": "${FRAME1_B64}"}},
               {"inline_data": {"mime_type": "image/jpeg", "data": "${FRAME2_B64}"}},
               {"inline_data": {"mime_type": "image/jpeg", "data": "${FRAME3_B64}"}}
             ]
           }],
           "generationConfig": {
-            "temperature": 0.95,
-            "maxOutputTokens": 300
+            "temperature": 0.9,
+            "maxOutputTokens": 350
           }
         }
         EOF
         
+        # Call Gemini API
         curl -s -X POST "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-pro:generateContent?key=${GEMINI_KEY}" \
           -H "Content-Type: application/json" \
           -d @payload.json > caption.json
         
-        FULL_TEXT=$(jq -r '.candidates[0].content.parts[0].text' caption.json)
-        TITLE=$(echo "$FULL_TEXT" | grep -oP 'JUDUL: \K[^\n]+' | head -1)
-        CAPTION=$(echo "$FULL_TEXT" | grep -oP 'CAPTION: \K[^\n]+' | head -1)
+        # Parse response
+        FULL_TEXT=$(jq -r '.candidates[0].content.parts[0].text // ""' caption.json)
+        echo "📝 Gemini response:"
+        echo "$FULL_TEXT"
+        
+        # Extract JUDUL (case insensitive)
+        TITLE=$(echo "$FULL_TEXT" | grep -i "^JUDUL:" | head -1 | sed 's/^JUDUL:\s*//i' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        
+        # Extract CAPTION (case insensitive)
+        CAPTION=$(echo "$FULL_TEXT" | grep -i "^CAPTION:" | head -1 | sed 's/^CAPTION:\s*//i' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        
+        # Fallback jika kosong
+        if [[ -z "$TITLE" ]]; then
+          TITLE="⚔️ VIKINGS - Pertempuran Epic!"
+          echo "⚠️ Using fallback title"
+        fi
+        
+        if [[ -z "$CAPTION" ]]; then
+          CAPTION="🔥 Saksikan aksi para Viking yang penuh semangat!\n\n#Vikings #VikingsSeries #Nordik #Pertempuran #SerialEpic #Drakkar #Warrior"
+          echo "⚠️ Using fallback caption"
+        fi
         
         echo "TITLE=$TITLE" >> $GITHUB_OUTPUT
         echo "CAPTION=$CAPTION" >> $GITHUB_OUTPUT
+        echo "✅ Caption generated"
 
     - name: Upload to Facebook
       env:
@@ -114,33 +146,67 @@ jobs:
         CAPTION: ${{ steps.caption.outputs.CAPTION }}
         TITLE: ${{ steps.caption.outputs.TITLE }}
       run: |
-        python3 << 'EOF'
-        import requests, os
-        token = os.environ.get("FB_TOKEN")
-        page_id = os.environ.get("FB_PAGE_ID")
-        caption = os.environ.get("CAPTION")
-        title = os.environ.get("TITLE")
+        python3 << 'PYTHON_SCRIPT'
+        import requests
+        import os
+        
+        token = os.environ.get("FB_TOKEN", "")
+        page_id = os.environ.get("FB_PAGE_ID", "")
+        caption = os.environ.get("CAPTION", "")
+        title = os.environ.get("TITLE", "")
+        
+        # Gabungkan judul dan caption
         full_caption = f"{title}\n\n{caption}" if title else caption
-
-        with open("output.mp4", "rb") as f:
+        
+        print(f"📤 Uploading to Facebook...")
+        print(f"Title: {title}")
+        print(f"Caption: {caption[:100]}...")
+        
+        url = f"https://graph.facebook.com/v18.0/{page_id}/videos"
+        
+        with open("output.mp4", "rb") as video_file:
             response = requests.post(
-                f"https://graph.facebook.com/v18.0/{page_id}/videos",
-                data={"description": full_caption, "access_token": token},
-                files={"source": f},
+                url,
+                data={
+                    "description": full_caption,
+                    "title": title,
+                    "access_token": token
+                },
+                files={"source": video_file},
                 timeout=120
             )
-        print(response.json())
-        EOF
+        
+        result = response.json()
+        
+        if "id" in result:
+            print(f"✅ Upload successful! Video ID: {result['id']}")
+            # Send success to Telegram (handled in next step)
+        else:
+            print(f"❌ Upload failed: {result}")
+            # Don't exit with error, just log
+        PYTHON_SCRIPT
 
     - name: Send Telegram notification
+      if: always()
       env:
         TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         TITLE: ${{ steps.caption.outputs.TITLE }}
+        CAPTION: ${{ steps.caption.outputs.CAPTION }}
       run: |
+        # Count used cuts
+        USED_COUNT=$(wc -l < used_cuts.txt 2>/dev/null || echo "0")
+        
+        MESSAGE="🔥 Facebook Vikings Upload\n"
+        MESSAGE+="📌 $TITLE\n\n"
+        MESSAGE+="📊 Total uploads: $USED_COUNT"
+        
         curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
           -d chat_id="${CHAT_ID}" \
-          -d text="🔥 Facebook Vikings Upload: ${TITLE}" > /dev/null
+          -d text="$MESSAGE" \
+          -d parse_mode="Markdown" > /dev/null
+        
+        echo "✅ Telegram notification sent"
 
     - name: Save used cuts
       if: always()
