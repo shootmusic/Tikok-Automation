@@ -192,19 +192,11 @@ jobs:
         result = response.json()
         
         if "id" in result:
-            raw_id = result['id']
-            # FIX: Format post_id yang bener (page_id_video_id)
-            if "_" not in str(raw_id):
-                post_id = f"{page_id}_{raw_id}"
-            else:
-                post_id = raw_id
-            
+            post_id = result['id']
             upload_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             print(f"✅ Uploaded: {post_id}")
             with open("post_id.txt", "w") as f:
                 f.write(post_id)
-            
-            # Simpan ke history dengan format: post_id|upload_date
             with open("posted_videos.txt", "a") as f:
                 f.write(f"{post_id}|{upload_date}\n")
         else:
@@ -345,6 +337,12 @@ jobs:
         
         while IFS='|' read -r POST_ID UPLOAD_DATE; do
           if [ -z "$POST_ID" ] || [ -z "$UPLOAD_DATE" ]; then
+            continue
+          fi
+          
+          # Cek format post_id
+          if [[ ! "$POST_ID" =~ ^[0-9]+_[0-9]+$ ]]; then
+            echo "⚠️ Invalid post_id format: $POST_ID, skipping..."
             continue
           fi
           
