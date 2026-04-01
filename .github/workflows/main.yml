@@ -4,14 +4,14 @@ on:
   schedule:
     - cron: '0 23 * * *'   # Upload jam 07:00 WIB
     - cron: '0 10 * * *'   # Upload jam 17:30 WIB
-    - cron: '*/15 * * * *' # Auto reply setiap 15 menit
   workflow_dispatch:
 
 jobs:
   # ==================== JOB 1: AUTO UPLOAD ====================
   auto-upload:
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule' || github.event.schedule == '0 23 * * *' || github.event.schedule == '0 10 * * *'
+    outputs:
+      post_id: ${{ steps.upload.outputs.post_id }}
     
     steps:
     - name: Checkout repository
@@ -136,6 +136,7 @@ jobs:
         echo "✅ Generated: $TITLE"
 
     - name: Upload to Facebook
+      id: upload
       env:
         FB_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
         FB_PAGE_ID: "104884774466325"
@@ -163,12 +164,19 @@ jobs:
         
         if "id" in result:
             print(f"✅ Uploaded: {result['id']}")
-            # Simpan post_id untuk auto engagement
             with open("last_post_id.txt", "w") as f:
                 f.write(result['id'])
+            print(f"post_id={result['id']}")
         else:
             print(f"⚠️ Error: {result}")
         PYTHON_SCRIPT
+
+    - name: Save used cuts
+      if: always()
+      uses: actions/cache/save@v4
+      with:
+        path: used_cuts.txt
+        key: fb-used-cuts-stable
 
     - name: Save last post ID
       uses: actions/cache/save@v4
@@ -188,19 +196,12 @@ jobs:
           -d text="<b>🔥 VIKINGS Upload #${USED_COUNT}</b>%0A%0A📌 <i>${TITLE}</i>%0A%0a💬 LIKE, COMMENT, SHARE!%0A📊 Total: ${USED_COUNT}" \
           -d parse_mode="HTML"
 
-    - name: Save used cuts
-      if: always()
-      uses: actions/cache/save@v4
-      with:
-        path: used_cuts.txt
-        key: fb-used-cuts-stable
-
 
   # ==================== JOB 2: AUTO ENGAGEMENT (LIKE + KOMEN) ====================
   auto-engagement:
     runs-on: ubuntu-latest
     needs: auto-upload
-    if: always() && github.event_name != 'schedule'
+    if: always()
     
     steps:
     - name: Checkout repository
@@ -218,7 +219,6 @@ jobs:
         FB_DUMMY_TOKEN: ${{ secrets.FB_DUMMY_TOKEN }}
         FB_DUMMY_USER_ID: ${{ secrets.FB_DUMMY_USER_ID }}
       run: |
-        # List komentar variasi
         COMMENTS=(
           "⚔️ Viking terbaik! Like for more epic content! 🔥"
           "🛡️ Ragnar would be proud! Share this! 💪"
@@ -226,28 +226,19 @@ jobs:
           "👑 Best scene ever! Who agrees? 👇"
           "🔥 More Vikings content please! Like this comment!"
           "⚔️ Skål! This is why Vikings is the best series! 🍻"
-          "💀 Brutal! Like if you love Vikings! 🛡️"
-          "🏆 Epic! Who else watches this on repeat? 🔥"
-          "🌊 Valhalla awaits! Like for more! ⚔️"
-          "👑 King Ragnar approves this post! Like! 🔥"
         )
         
-        # Ambil random komentar
         RANDOM_INDEX=$((RANDOM % ${#COMMENTS[@]}))
         RANDOM_COMMENT="${COMMENTS[$RANDOM_INDEX]}"
         
-        # Baca post_id terakhir
         if [ -f "last_post_id.txt" ]; then
           POST_ID=$(cat last_post_id.txt)
           
-          # Like postingan
           echo "👍 Liking post: $POST_ID"
           curl -s -X POST "https://graph.facebook.com/v18.0/${POST_ID}/likes?access_token=${FB_DUMMY_TOKEN}" > /dev/null
           
-          # Jeda biar gak kena spam detection
           sleep 5
           
-          # Komentar
           echo "💬 Commenting: $RANDOM_COMMENT"
           curl -s -X POST "https://graph.facebook.com/v18.0/${POST_ID}/comments" \
             -d "message=${RANDOM_COMMENT}" \
@@ -258,10 +249,12 @@ jobs:
           echo "⚠️ No post ID found, skipping auto engagement"
         fi
 
+
   # ==================== JOB 3: AUTO REPLY AI ====================
   auto-reply:
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' && github.event.schedule == '*/15 * * * *'
+    needs: auto-upload
+    if: always()
     
     steps:
     - name: Checkout repository
@@ -274,9 +267,10 @@ jobs:
         key: last-post-id
         fail-on-cache-miss: false
 
-    - name: Get latest comments
+    - name: Get and reply to comments
       env:
         FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
+        GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
       run: |
         if [ ! -f "last_post_id.txt" ]; then
           echo "⚠️ No post ID found, skipping"
@@ -286,52 +280,35 @@ jobs:
         POST_ID=$(cat last_post_id.txt)
         
         # Ambil komen terbaru
-        curl -s -X GET "https://graph.facebook.com/v18.0/${POST_ID}/comments?access_token=${FB_PAGE_TOKEN}&order=reverse_chronological&limit=10" > comments.json
+        curl -s -X GET "https://graph.facebook.com/v18.0/${POST_ID}/comments?access_token=${FB_PAGE_TOKEN}&order=reverse_chronological&limit=5" > comments.json
         
-        # Simpan komen yang belum dibalas (untuk diproses nanti)
-        # Note: Ini perlu tracking reply history, untuk sekarang skip dulu
-        echo "📝 Found $(jq '.data | length' comments.json) comments"
-        
-        # Untuk demo, kita ambil komen pertama
-        FIRST_COMMENT=$(jq -r '.data[0].id // ""' comments.json)
-        FIRST_MESSAGE=$(jq -r '.data[0].message // ""' comments.json)
-        
-        if [ -n "$FIRST_COMMENT" ] && [ "$FIRST_MESSAGE" != "null" ]; then
-          echo "FIRST_COMMENT=$FIRST_COMMENT" >> $GITHUB_OUTPUT
-          echo "FIRST_MESSAGE=$FIRST_MESSAGE" >> $GITHUB_OUTPUT
-        fi
-
-    - name: Generate AI reply with Gemini
-      if: steps.comments.outputs.FIRST_COMMENT != ''
-      env:
-        GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
-      run: |
-        COMMENT="${{ steps.comments.outputs.FIRST_MESSAGE }}"
-        
-        curl -s -X POST "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-pro:generateContent?key=${GEMINI_KEY}" \
-          -H "Content-Type: application/json" \
-          -d '{
-            "contents": [{
-              "parts": [{
-                "text": "Balas komen Facebook ini dengan ramah, singkat, engaging, dan gunakan emoji yang sesuai. Komen: '"${COMMENT}"'"
-              }]
-            }],
-            "generationConfig": {"temperature": 0.8, "maxOutputTokens": 100}
-          }' > reply.json
-        
-        REPLY=$(jq -r '.candidates[0].content.parts[0].text // ""' reply.json)
-        echo "REPLY=$REPLY" >> $GITHUB_OUTPUT
-
-    - name: Post reply
-      if: steps.reply.outputs.REPLY != ''
-      env:
-        FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
-      run: |
-        COMMENT_ID="${{ steps.comments.outputs.FIRST_COMMENT }}"
-        REPLY="${{ steps.reply.outputs.REPLY }}"
-        
-        curl -s -X POST "https://graph.facebook.com/v18.0/${COMMENT_ID}/comments" \
-          -d "message=${REPLY}" \
-          -d "access_token=${FB_PAGE_TOKEN}" > /dev/null
-        
-        echo "✅ Replied to comment: $REPLY"
+        # Loop setiap komen
+        jq -c '.data[]' comments.json | while read comment; do
+          COMMENT_ID=$(echo "$comment" | jq -r '.id')
+          COMMENT_TEXT=$(echo "$comment" | jq -r '.message')
+          
+          echo "💬 Found comment: $COMMENT_TEXT"
+          
+          # Generate reply with Gemini
+          REPLY=$(curl -s -X POST "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-pro:generateContent?key=${GEMINI_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"contents\": [{
+                \"parts\": [{
+                  \"text\": \"Balas komen Facebook ini dengan ramah, singkat (max 50 kata), engaging, dan gunakan emoji. Komen: ${COMMENT_TEXT}\"
+                }]
+              }],
+              \"generationConfig\": {\"temperature\": 0.8, \"maxOutputTokens\": 100}
+            }" | jq -r '.candidates[0].content.parts[0].text // ""')
+          
+          if [ -n "$REPLY" ] && [ "$REPLY" != "null" ] && [ "$REPLY" != "" ]; then
+            echo "🤖 Replying: $REPLY"
+            curl -s -X POST "https://graph.facebook.com/v18.0/${COMMENT_ID}/comments" \
+              -d "message=${REPLY}" \
+              -d "access_token=${FB_PAGE_TOKEN}" > /dev/null
+            echo "✅ Replied to comment: $COMMENT_TEXT"
+            sleep 10
+          else
+            echo "⚠️ Failed to generate reply for: $COMMENT_TEXT"
+          fi
+        done
