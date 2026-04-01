@@ -193,6 +193,10 @@ jobs:
         
         if "id" in result:
             post_id = result['id']
+            # 🔥 FIX: Kalo cuma angka (video_id), gabungin dengan page_id
+            if '_' not in str(post_id):
+                post_id = f"{page_id}_{post_id}"
+            
             upload_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             print(f"✅ Uploaded: {post_id}")
             with open("post_id.txt", "w") as f:
