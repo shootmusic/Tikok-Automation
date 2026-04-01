@@ -16,7 +16,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Cache apt packages (biar setup cepet)
+    - name: Cache apt packages
       uses: actions/cache@v4
       with:
         path: /var/cache/apt/archives
@@ -180,7 +180,12 @@ jobs:
         with open("output.mp4", "rb") as video_file:
             response = requests.post(
                 url,
-                data={"description": full_caption, "title": title, "access_token": token},
+                data={
+                    "description": full_caption,
+                    "title": title,
+                    "access_token": token,
+                    "privacy": {"value": "EVERYONE"}
+                },
                 files={"source": video_file},
                 timeout=120
             )
@@ -261,6 +266,12 @@ jobs:
         fi
         
         POST_ID=$(cat post_id.txt)
+        
+        # Cek apakah post_id valid (harusnya format: page_id_video_id)
+        if [[ ! "$POST_ID" =~ ^[0-9]+_[0-9]+$ ]]; then
+          echo "⚠️ Invalid post_id format: $POST_ID"
+          exit 0
+        fi
         
         COMMENTS=(
           "⚔️ Viking terbaik! Like from Asupan Random +62! 🔥"
