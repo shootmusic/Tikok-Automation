@@ -84,14 +84,15 @@ jobs:
         FRAME2_B64=$(base64 -w 0 frame2.jpg)
         FRAME3_B64=$(base64 -w 0 frame3.jpg)
         
-        # Hitung segment number
         USED_COUNT=$(wc -l < used_cuts.txt)
+        START_TIME=${{ steps.cut.outputs.start_time }}
+        TIMESTAMP=$(printf "%02d:%02d" $((START_TIME/60)) $((START_TIME%60)))
         
         cat > payload.json << EOF
         {
           "contents": [{
             "parts": [
-              {"text": "Analisis video pendek 60 detik dari serial VIKINGS Season 1 Episode 1 (segment ke-$USED_COUNT). Berdasarkan 3 frame yang diberikan:\n\nBUAT KONTEN VIRAL UNTUK FACEBOOK dengan format:\n\n1. JUDUL: Judul EPIC, menarik, pakai kata ajakan (max 60 karakter)\n2. DESKRIPSI: 2-3 kalimat yang engaging, ajak LIKE, COMMENT, SHARE\n3. CAPTION: Caption dengan hook, emoji, call to action, dan 10-15 hashtag relevan (campuran trending + niche)\n4. PERTANYAAN: 1 pertanyaan yang memancing diskusi di kolom komen\n\nFORMAT JAWABAN (HARUS DIIKUTI):\nJUDUL: [judul]\nDESKRIPSI: [deskripsi]\nCAPTION: [caption dengan hashtag]\nPERTANYAAN: [pertanyaan]"},
+              {"text": "Analisis video pendek 60 detik dari serial VIKINGS Season 1 Episode 1 (segment ke-$USED_COUNT, timestamp $TIMESTAMP). Berdasarkan 3 frame yang diberikan:\n\nBUAT KONTEN VIRAL UNTUK FACEBOOK dengan format:\n\n1. JUDUL: Judul EPIC yang UNIK dan BERBEDA dari video sebelumnya, spesifik sesuai ADEGAN, max 60 karakter, pakai kata ajakan LIKE & SHARE\n2. DESKRIPSI: 2-3 kalimat engaging, ajak LIKE, COMMENT, SHARE\n3. CAPTION: Caption dengan hook, emoji, call to action, dan 10-15 hashtag relevan\n4. PERTANYAAN: 1 pertanyaan yang memancing diskusi\n\nFORMAT JAWABAN (WAJIB DIIKUTI):\nJUDUL: ...\nDESKRIPSI: ...\nCAPTION: ...\nPERTANYAAN: ..."},
               {"inline_data": {"mime_type": "image/jpeg", "data": "${FRAME1_B64}"}},
               {"inline_data": {"mime_type": "image/jpeg", "data": "${FRAME2_B64}"}},
               {"inline_data": {"mime_type": "image/jpeg", "data": "${FRAME3_B64}"}}
@@ -113,15 +114,14 @@ jobs:
         echo "$FULL_TEXT"
         echo "======================="
         
-        # Parse dengan regex yang lebih cerdas
         TITLE=$(echo "$FULL_TEXT" | grep -i "^JUDUL:" | head -1 | sed 's/^JUDUL:\s*//i' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         DESCRIPTION=$(echo "$FULL_TEXT" | grep -i "^DESKRIPSI:" | head -1 | sed 's/^DESKRIPSI:\s*//i' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         CAPTION=$(echo "$FULL_TEXT" | grep -i "^CAPTION:" | head -1 | sed 's/^CAPTION:\s*//i' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         QUESTION=$(echo "$FULL_TEXT" | grep -i "^PERTANYAAN:" | head -1 | sed 's/^PERTANYAAN:\s*//i' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         
-        # Fallback jika kosong
+        # Fallback judul pake timestamp biar beda
         if [[ -z "$TITLE" ]]; then
-          TITLE="⚔️ VIKINGS - Pertempuran Epic! LIKE & SHARE!"
+          TITLE="⚔️ VIKINGS - Adegan EPIC di Menit ${TIMESTAMP}! LIKE & SHARE!"
         fi
         
         if [[ -z "$DESCRIPTION" ]]; then
@@ -157,6 +157,9 @@ jobs:
         full_caption = os.environ.get("FULL_CAPTION", "")
         title = os.environ.get("TITLE", "")
         
+        # Fix: Ganti literal \n jadi newline asli
+        full_caption = full_caption.replace('\\n\\n', '\n\n').replace('\\n', '\n')
+        
         print(f"📤 Uploading: {title}")
         
         url = f"https://graph.facebook.com/v18.0/{page_id}/videos"
@@ -172,7 +175,7 @@ jobs:
         if "id" in result:
             print(f"✅ Uploaded: {result['id']}")
         else:
-            print(f"⚠️ Upload result: {result}")
+            print(f"⚠️ Error: {result}")
         PYTHON_SCRIPT
 
     - name: Send Telegram notification
@@ -181,13 +184,12 @@ jobs:
         TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         TITLE: ${{ steps.caption.outputs.TITLE }}
-        FULL_CAPTION: ${{ steps.caption.outputs.FULL_CAPTION }}
       run: |
         USED_COUNT=$(wc -l < used_cuts.txt)
-        MESSAGE="🔥 VIKINGS S1E1 - Upload #${USED_COUNT}\n📌 ${TITLE}\n\n💬 Ajakan: LIKE, COMMENT, SHARE!\n📊 Total uploads: ${USED_COUNT}"
         curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
           -d chat_id="${CHAT_ID}" \
-          -d text="$MESSAGE" > /dev/null
+          -d text="<b>🔥 VIKINGS S1E1 - Upload #${USED_COUNT}</b>%0A%0A📌 <i>${TITLE}</i>%0A%0A💬 <b>LIKE, COMMENT, SHARE!</b>%0A📊 Total uploads: <code>${USED_COUNT}</code>" \
+          -d parse_mode="HTML"
 
     - name: Save used cuts
       if: always()
