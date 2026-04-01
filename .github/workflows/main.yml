@@ -2,8 +2,8 @@ name: Facebook Auto Upload
 
 on:
   schedule:
-    - cron: '0 12 * * *'
-    - cron: '0 23 * * *'
+    - cron: '0 12 * * *'   # 19:00 WIB
+    - cron: '0 23 * * *'   # 06:00 WIB
   workflow_dispatch:
 
 jobs:
@@ -75,7 +75,7 @@ jobs:
         ffmpeg -i output.mp4 -ss 40 -vframes 1 -y frame3.jpg 2>/dev/null
         echo "🖼️ Frames extracted"
 
-    - name: Generate creative caption with Gemini
+    - name: Generate engaging content with Gemini
       id: caption
       env:
         GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -84,11 +84,14 @@ jobs:
         FRAME2_B64=$(base64 -w 0 frame2.jpg)
         FRAME3_B64=$(base64 -w 0 frame3.jpg)
         
+        # Hitung segment number
+        USED_COUNT=$(wc -l < used_cuts.txt)
+        
         cat > payload.json << EOF
         {
           "contents": [{
             "parts": [
-              {"text": "Analisis video pendek 60 detik dari serial VIKINGS Season 1 Episode 1. Berdasarkan 3 frame:\n\nBuat 1 JUDUL EPIC dan 1 CAPTION dengan hashtag. JAWAB TANPA MARKDOWN, LANGSUNG FORMAT:\n\nJUDUL: [judul maksimal 60 karakter]\nCAPTION: [caption dengan emoji dan 5-8 hashtag]"},
+              {"text": "Analisis video pendek 60 detik dari serial VIKINGS Season 1 Episode 1 (segment ke-$USED_COUNT). Berdasarkan 3 frame yang diberikan:\n\nBUAT KONTEN VIRAL UNTUK FACEBOOK dengan format:\n\n1. JUDUL: Judul EPIC, menarik, pakai kata ajakan (max 60 karakter)\n2. DESKRIPSI: 2-3 kalimat yang engaging, ajak LIKE, COMMENT, SHARE\n3. CAPTION: Caption dengan hook, emoji, call to action, dan 10-15 hashtag relevan (campuran trending + niche)\n4. PERTANYAAN: 1 pertanyaan yang memancing diskusi di kolom komen\n\nFORMAT JAWABAN (HARUS DIIKUTI):\nJUDUL: [judul]\nDESKRIPSI: [deskripsi]\nCAPTION: [caption dengan hashtag]\nPERTANYAAN: [pertanyaan]"},
               {"inline_data": {"mime_type": "image/jpeg", "data": "${FRAME1_B64}"}},
               {"inline_data": {"mime_type": "image/jpeg", "data": "${FRAME2_B64}"}},
               {"inline_data": {"mime_type": "image/jpeg", "data": "${FRAME3_B64}"}}
@@ -96,7 +99,7 @@ jobs:
           }],
           "generationConfig": {
             "temperature": 0.95,
-            "maxOutputTokens": 300
+            "maxOutputTokens": 500
           }
         }
         EOF
@@ -110,43 +113,49 @@ jobs:
         echo "$FULL_TEXT"
         echo "======================="
         
-        # Parse dengan cara yang lebih robust
-        TITLE=$(echo "$FULL_TEXT" | sed -n 's/^JUDUL:\s*//ip' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        CAPTION=$(echo "$FULL_TEXT" | sed -n 's/^CAPTION:\s*//ip' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        # Parse dengan regex yang lebih cerdas
+        TITLE=$(echo "$FULL_TEXT" | grep -i "^JUDUL:" | head -1 | sed 's/^JUDUL:\s*//i' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        DESCRIPTION=$(echo "$FULL_TEXT" | grep -i "^DESKRIPSI:" | head -1 | sed 's/^DESKRIPSI:\s*//i' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        CAPTION=$(echo "$FULL_TEXT" | grep -i "^CAPTION:" | head -1 | sed 's/^CAPTION:\s*//i' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        QUESTION=$(echo "$FULL_TEXT" | grep -i "^PERTANYAAN:" | head -1 | sed 's/^PERTANYAAN:\s*//i' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         
-        # Kalo masih kosong, coba ambil dari baris pertama setelah "JUDUL:" (untuk multi-line)
+        # Fallback jika kosong
         if [[ -z "$TITLE" ]]; then
-          TITLE=$(echo "$FULL_TEXT" | grep -A1 "^JUDUL:" | tail -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+          TITLE="⚔️ VIKINGS - Pertempuran Epic! LIKE & SHARE!"
         fi
         
-        # Fallback terakhir: generate dari timestamp
-        START_TIME=${{ steps.cut.outputs.start_time }}
-        if [[ -z "$TITLE" ]]; then
-          TITLE="⚔️ VIKINGS - Adegan Epic di $(printf "%02d:%02d" $((START_TIME/60)) $((START_TIME%60)))"
+        if [[ -z "$DESCRIPTION" ]]; then
+          DESCRIPTION="🔥 Aksi seru para Viking! Jangan lupa LIKE, COMMENT, dan SHARE video ini!"
         fi
         
         if [[ -z "$CAPTION" ]]; then
-          CAPTION="🔥 Aksi seru para Viking!\n\n#Vikings #VikingsSeries #Nordik #Pertempuran #SerialEpic #Drakkar #Warrior"
+          CAPTION="🔥 EPIC VIKINGS MOMENT!\n\nSaksikan aksi seru para Viking di episode ini!\n\n👇👇👇\n\n#Vikings #VikingsSeries #Nordik #Pertempuran #SerialEpic #Drakkar #Warrior #VikingWarrior #SeriesKeren #Viral #FacebookReels #ViralVideo #EpicMoment #AksiEpic #KontenViral"
         fi
         
+        if [[ -z "$QUESTION" ]]; then
+          QUESTION="Menurut kalian, siapakah Viking terkuat dalam serial ini? Tulis di komen! ⚔️🔥"
+        fi
+        
+        # Gabungkan semua jadi full caption
+        FULL_CAPTION="${TITLE}\n\n${DESCRIPTION}\n\n${CAPTION}\n\n📢 ${QUESTION}\n\n👇 LIKE, COMMENT, SHARE ya! 🔥"
+        
         echo "TITLE=$TITLE" >> $GITHUB_OUTPUT
-        echo "CAPTION=$CAPTION" >> $GITHUB_OUTPUT
+        echo "FULL_CAPTION=$FULL_CAPTION" >> $GITHUB_OUTPUT
         echo "✅ Generated: $TITLE"
 
     - name: Upload to Facebook
       env:
         FB_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
         FB_PAGE_ID: "104884774466325"
-        CAPTION: ${{ steps.caption.outputs.CAPTION }}
+        FULL_CAPTION: ${{ steps.caption.outputs.FULL_CAPTION }}
         TITLE: ${{ steps.caption.outputs.TITLE }}
       run: |
         python3 << 'PYTHON_SCRIPT'
         import requests, os
         token = os.environ.get("FB_TOKEN", "")
         page_id = os.environ.get("FB_PAGE_ID", "")
-        caption = os.environ.get("CAPTION", "")
+        full_caption = os.environ.get("FULL_CAPTION", "")
         title = os.environ.get("TITLE", "")
-        full_caption = f"{title}\n\n{caption}" if title else caption
         
         print(f"📤 Uploading: {title}")
         
@@ -172,9 +181,10 @@ jobs:
         TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         TITLE: ${{ steps.caption.outputs.TITLE }}
+        FULL_CAPTION: ${{ steps.caption.outputs.FULL_CAPTION }}
       run: |
         USED_COUNT=$(wc -l < used_cuts.txt)
-        MESSAGE="🔥 Facebook Vikings Upload\n📌 ${TITLE}\n\n📊 Total uploads: ${USED_COUNT}"
+        MESSAGE="🔥 VIKINGS S1E1 - Upload #${USED_COUNT}\n📌 ${TITLE}\n\n💬 Ajakan: LIKE, COMMENT, SHARE!\n📊 Total uploads: ${USED_COUNT}"
         curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
           -d chat_id="${CHAT_ID}" \
           -d text="$MESSAGE" > /dev/null
