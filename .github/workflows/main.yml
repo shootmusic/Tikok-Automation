@@ -1,14 +1,13 @@
-name: Facebook Auto Upload & Engagement
+name: Facebook Auto Upload
 
 on:
   schedule:
     - cron: '0 23 * * *'   # Upload jam 07:00 WIB
     - cron: '0 10 * * *'   # Upload jam 17:30 WIB
-    - cron: '*/30 * * * *' # Auto reply setiap 30 menit
   workflow_dispatch:
 
 jobs:
-  # ==================== JOB 1: AUTO UPLOAD ====================
+  # ==================== AUTO UPLOAD ====================
   auto-upload:
     runs-on: ubuntu-latest
     
@@ -45,14 +44,6 @@ jobs:
         key: posted-videos-history
         restore-keys: |
           posted-videos-
-
-    - name: Restore replied comments history
-      uses: actions/cache@v4
-      with:
-        path: replied_comments.txt
-        key: replied-comments-history
-        restore-keys: |
-          replied-comments-
 
     - name: Download video from Google Drive
       run: |
@@ -167,14 +158,14 @@ jobs:
         TITLE: ${{ steps.caption.outputs.TITLE }}
       run: |
         python3 << 'PYTHON_SCRIPT'
-        import requests, os, time
+        import requests, os
+        from datetime import datetime
         
         token = os.environ.get("FB_TOKEN", "")
         page_id = os.environ.get("FB_PAGE_ID", "")
         full_caption = os.environ.get("FULL_CAPTION", "").replace('\\n\\n', '\n\n').replace('\\n', '\n')
         title = os.environ.get("TITLE", "")
         
-        # UPLOAD VIDEO
         url = f"https://graph.facebook.com/v18.0/{page_id}/videos"
         with open("output.mp4", "rb") as video_file:
             response = requests.post(
@@ -198,12 +189,9 @@ jobs:
         video_id = result['id']
         print(f"📹 Video uploaded: {video_id}")
         
-        # SIMPAN VIDEO ID AJA
         with open("post_id.txt", "w") as f:
             f.write(video_id)
         
-        # SIMPAN HISTORY
-        from datetime import datetime
         upload_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open("posted_videos.txt", "a") as f:
             f.write(f"{video_id}|{upload_date}\n")
@@ -233,13 +221,6 @@ jobs:
         path: posted_videos.txt
         key: posted-videos-history
 
-    - name: Save replied comments history
-      if: always()
-      uses: actions/cache/save@v4
-      with:
-        path: replied_comments.txt
-        key: replied-comments-history
-
     - name: Send Telegram notification
       env:
         TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -249,148 +230,4 @@ jobs:
         USED_COUNT=$(wc -l < used_cuts.txt)
         curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
           -d chat_id="${CHAT_ID}" \
-          -d text="🔥 VIKINGS Upload #${USED_COUNT}\n📌 ${TITLE}\n💬 LIKE, COMMENT, SHARE!\n📊 Total: ${USED_COUNT}"
-
-
-  # ==================== JOB 2: AUTO LIKE & KOMEN ====================
-  auto-engagement:
-    runs-on: ubuntu-latest
-    needs: auto-upload
-    if: always()
-    
-    steps:
-    - name: Download post data
-      uses: actions/download-artifact@v4
-      with:
-        name: post-data
-
-    - name: Auto Like & Comment from Dummy Page
-      env:
-        FB_DUMMY_PAGE_TOKEN: ${{ secrets.FB_DUMMY_PAGE_TOKEN }}
-      run: |
-        if [ ! -f "post_id.txt" ]; then
-          echo "⚠️ No post_id.txt found"
-          exit 0
-        fi
-        
-        VIDEO_ID=$(cat post_id.txt)
-        echo "🎯 Video ID: $VIDEO_ID"
-        
-        COMMENTS=(
-          "⚔️ Viking terbaik! Like from Asupan Random +62! 🔥"
-          "🛡️ Ragnar would be proud! Share this! 💪"
-          "🌊 Another epic moment from Vikings! Like & share!"
-          "👑 Best scene ever! Who agrees? 👇"
-          "🔥 More Vikings content please! Like this comment!"
-        )
-        
-        RANDOM_INDEX=$((RANDOM % ${#COMMENTS[@]}))
-        RANDOM_COMMENT="${COMMENTS[$RANDOM_INDEX]}"
-        
-        # LIKE VIDEO LANGSUNG
-        echo "👍 Liking video: $VIDEO_ID"
-        curl -s -X POST "https://graph.facebook.com/v18.0/${VIDEO_ID}/likes?access_token=${FB_DUMMY_PAGE_TOKEN}" || echo "Like failed"
-        
-        sleep 3
-        
-        # COMMENT VIDEO LANGSUNG
-        echo "💬 Commenting: $RANDOM_COMMENT"
-        curl -s -X POST "https://graph.facebook.com/v18.0/${VIDEO_ID}/comments" \
-          -d "message=${RANDOM_COMMENT}" \
-          -d "access_token=${FB_DUMMY_PAGE_TOKEN}" || echo "Comment failed"
-        
-        echo "✅ Auto engagement completed!"
-
-
-  # ==================== JOB 3: AUTO REPLY AI ====================
-  auto-reply:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' && github.event.schedule == '*/30 * * * *'
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Restore posted videos history
-      uses: actions/cache@v4
-      with:
-        path: posted_videos.txt
-        key: posted-videos-history
-        restore-keys: |
-          posted-videos-
-
-    - name: Restore replied comments history
-      uses: actions/cache@v4
-      with:
-        path: replied_comments.txt
-        key: replied-comments-history
-        restore-keys: |
-          replied-comments-
-
-    - name: Reply to comments from recent videos (last 30 days)
-      env:
-        FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
-        GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
-      run: |
-        if [ ! -f "posted_videos.txt" ]; then
-          echo "⚠️ No posted videos history found"
-          exit 0
-        fi
-        
-        touch replied_comments.txt
-        CURRENT_DATE=$(date +%s)
-        
-        while IFS='|' read -r VIDEO_ID UPLOAD_DATE; do
-          if [ -z "$VIDEO_ID" ] || [ -z "$UPLOAD_DATE" ]; then
-            continue
-          fi
-          
-          UPLOAD_TIMESTAMP=$(date -d "$UPLOAD_DATE" +%s 2>/dev/null || echo 0)
-          AGE_DAYS=$(( (CURRENT_DATE - UPLOAD_TIMESTAMP) / 86400 ))
-          
-          if [ $AGE_DAYS -ge 30 ]; then
-            echo "⏭️ Skip video $VIDEO_ID (uploaded $AGE_DAYS days ago)"
-            continue
-          fi
-          
-          echo "📝 Checking comments for video $VIDEO_ID ($AGE_DAYS days old)"
-          
-          curl -s -X GET "https://graph.facebook.com/v18.0/${VIDEO_ID}/comments?access_token=${FB_PAGE_TOKEN}&order=reverse_chronological&limit=10" > comments.json
-          
-          jq -c '.data[]' comments.json | while read comment; do
-            COMMENT_ID=$(echo "$comment" | jq -r '.id')
-            COMMENT_TEXT=$(echo "$comment" | jq -r '.message')
-            
-            if grep -q "^$COMMENT_ID$" replied_comments.txt; then
-              continue
-            fi
-            
-            echo "💬 New comment: $COMMENT_TEXT"
-            
-            REPLY=$(curl -s -X POST "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-pro:generateContent?key=${GEMINI_KEY}" \
-              -H "Content-Type: application/json" \
-              -d "{
-                \"contents\": [{
-                  \"parts\": [{
-                    \"text\": \"Balas komen Facebook ini dengan ramah, singkat (max 50 kata), engaging, dan gunakan emoji. Komen: ${COMMENT_TEXT}\"
-                  }]
-                }]
-              }" | jq -r '.candidates[0].content.parts[0].text // ""')
-            
-            if [ -n "$REPLY" ] && [ "$REPLY" != "null" ]; then
-              echo "🤖 Replying: $REPLY"
-              curl -s -X POST "https://graph.facebook.com/v18.0/${COMMENT_ID}/comments" \
-                -d "message=${REPLY}" \
-                -d "access_token=${FB_PAGE_TOKEN}" > /dev/null
-              echo "$COMMENT_ID" >> replied_comments.txt
-              echo "✅ Replied"
-              sleep 3
-            fi
-          done
-        done < posted_videos.txt
-        
-    - name: Save replied comments history
-      uses: actions/cache/save@v4
-      with:
-        path: replied_comments.txt
-        key: replied-comments-history
+          -d text="🔥 VIKINGS Upload #${USED_COUNT}\n📌 ${TITLE}\n📊 Total: ${USED_COUNT}"
